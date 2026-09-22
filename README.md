@@ -121,13 +121,8 @@ Reactions that list multiple $[T_{\min}, T_{\max}]$ ranges are resolved at load 
 | Constant | Value | Description |
 |----------|-------|-------------|
 | `grain_radius` | $1.0 \times 10^{-5}\ \mathrm{cm}$ | Grain radius |
-| `grain_mass_density` | $3.0\ \mathrm{g\ cm^{-3}}$ | Grain material density |
-| `dust_to_gas_mass` | $1.0 \times 10^{-2}$ | Dust-to-gas mass ratio |
-| `grain_gas_ratio` | $1.32 \times 10^{-12}$ | Grain-to-gas number density, $n_\mathrm{gr}/n_\mathrm{H}$ |
+| `grain_gas_ratio` | $5.0 \times 10^{-12}$ | Grain number density per H nucleus, $n_\mathrm{gr}/n_\mathrm{H}$ |
 | `zeta_cr` | $1.6 \times 10^{-17}\ \mathrm{s}^{-1}$ | Cosmic-ray ionisation rate |
-
-`grain_gas_ratio` is derived from the three grain parameters above as
-$\mathcal{D}\,m_\mathrm{amu} / (\tfrac{4}{3}\pi a^3 \rho_d)$.
 
 ### `load_abundances`
 
