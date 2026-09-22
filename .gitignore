@@ -21,3 +21,9 @@ examples/nelson_all_tracers_mpi.py
 examples/real_tracer_jax.py
 solver_jax.py
 .gitignore
+
+docs/
+tests/
+examples/nelson_charge_tracer.py
+examples/pdfac_compare.py
+datasets/grav_collapse/Melisse/README
