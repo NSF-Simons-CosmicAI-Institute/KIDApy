@@ -21,7 +21,7 @@ Full grain-surface chemistry (adsorption/desorption, surface reactions) is not s
 
 Quick start
 -----------
-    from gas_parser import Network, load_abundances
+    from parser import Network, load_abundances
 
     net = Network(grains=True)
     net.load_from_disk("reactions.dat")
@@ -45,6 +45,7 @@ import scipy.sparse as sp
 from collections import defaultdict
 from typing import Dict
 
+import pdfac
 import shielding
 
 
@@ -52,18 +53,12 @@ import shielding
 # Chemistry constants
 # ---------------------------------------------------------------------------
 
-#: Grain parameters: radius [cm], material density [g cm⁻³], dust-to-gas mass ratio
+
 grain_radius: float = 1.0e-5
-grain_mass_density: float = 3.0
-dust_to_gas_mass: float = 1.0e-2
 
-#: Gas mass per grain [amu]
-_gas_mass_per_grain: float = ((4.0 / 3.0) * np.pi * grain_radius ** 3
-                              * grain_mass_density
-                              / (dust_to_gas_mass * 1.660538291e-24))
-
-#: Grain number density = grain_gas_ratio * nH.  Helium mass is not counted.
-grain_gas_ratio: float = 1.0 / _gas_mass_per_grain
+#: Grain number density per H nucleus: n_d = grain_gas_ratio * nH.
+#: Wakelam et al. (2012) require ``π a² n_d ≈ 1–2e-21 nH``, i.e. n_d ≈ 5e-12 nH. 
+grain_gas_ratio: float = 5.0e-12
 
 #: Cosmic-ray ionisation rate [s⁻¹]
 zeta_cr: float = 1.6e-17
@@ -79,6 +74,17 @@ def _shield_channel(rxn: dict):
         return None
     return _SHIELDED_CHANNELS.get(
         (rxn["reactants"][0], frozenset(rxn["products"])))
+
+
+def _uv1(env: dict) -> float:
+    """The 8–13.6 eV band from the environment, under either key name.
+
+    ``uv_flux`` and ``uv1`` are the same quantity (tracer column 11); both are accepted so the key can be named consistently with ``uv3``/``uv4`` or left as it was.
+    """
+    for key in ("uv1", "uv_flux"):
+        if key in env:
+            return float(env[key])
+    raise KeyError("environment needs 'uv1' (or 'uv_flux') for the 8-13.6 eV band")
 
 
 def load_abundances(path: str) -> Dict[str, float]:
@@ -146,22 +152,13 @@ class Network:
 
         True — gas-phase plus pseudo-grain reactions.  H₂ formation via XH (frml 10/11) and ion–grain recombination via GRAIN-/GRAIN0 (frml 0, itype 0) are active.  Grain temperature is not required.
 
-    Environment dict
-    ----------------
-    Required keys for get_operators::
-
-        env = dict(
-            T        = 10.0,   # gas temperature [K]
-            nH       = 1e4,    # total H number density [cm⁻³]
-            Av       = 1.0,    # visual extinction [mag]
-            uv_flux  = 1.0,    # FUV field scaling (1 = standard Draine field)
-        )
-
-    Optional: Tcap_2body (bool, default True) — clamp T to [Tmin, Tmax] when evaluating Kooij / ionpol rate coefficients.
+    See Also
+    --------
+    get_operators : Builds A and B; documents the environment dict.
     """
 
     def __init__(self, grains: bool = False, self_shielding: bool = False,
-                 dust_attenuation: bool = False):
+                 dust_attenuation: bool = False, pd_fac: bool = False):
         """
         Parameters
         ----------
@@ -171,10 +168,19 @@ class Network:
             Apply Lee et al. (1996) H₂ and CO shielding factors to the H₂ and CO photodissociation rates.  See :mod:`shielding`.
         dust_attenuation : bool
             Include the ``exp(-γ·Av)`` dust term in frml-2 photoreaction rates.  Off by default, on the assumption that ``uv_flux`` is already attenuated; enabling it as well would count the dust twice.
+        pd_fac : bool
+            Take frml-2 rates from the local radiation field, ``k = α · PDfac(XVAL)``, instead of ``uv_flux``.  See :mod:`pdfac`.  The environment then needs ``uv1, uv3, uv4`` instead of ``uv_flux`` and ``Av``, and ``Av`` is derived from the field.  Mutually exclusive with ``dust_attenuation``.
+
+            With ``self_shielding`` also on, the H₂ and CO channels are overwritten with ``α · θ`` rather than multiplied, and ``θ_dust`` is folded into the CO factor — reproducing ``H2SHIELD``/``COSHIELD``, where those two rates carry no PDfac.
         """
+        if pd_fac and dust_attenuation:
+            raise ValueError("pd_fac and dust_attenuation are mutually "
+                             "exclusive: PDfac already replaces exp(-gamma*Av)")
+
         self.grains: bool = grains
         self.self_shielding: bool = self_shielding
         self.dust_attenuation: bool = dust_attenuation
+        self.pd_fac: bool = pd_fac
 
         self.species: list = []
         self.species_map: dict = {}
@@ -213,10 +219,26 @@ class Network:
         """
         Build the sparse ODE tensors ``A`` and ``B`` for the current environment.
 
+        Physical conditions are passed as a plain dict::
+
+            env = dict(
+                T        = 10.0,   # gas temperature [K]
+                nH       = 1e4,    # total H number density [cm⁻³]
+                Av       = 1.0,    # visual extinction [mag]
+                uv_flux  = 1.0,    # FUV field scaling (1 = standard Draine field)
+            )
+
+        ``uv1`` is accepted as a synonym for ``uv_flux``; both name the 8–13.6 eV band.  Unrecognised keys are ignored.
+
+        With ``pd_fac=True`` the radiation field is instead given by the three band energy densities ``uv1``, ``uv3`` and ``uv4``, and ``Av`` is derived from them — any ``Av`` in the dict is ignored.
+
+        ``Tcap_2body`` (bool, default True) clamps T to [Tmin, Tmax] when evaluating Kooij / ionpol rate coefficients.
+
         Parameters
         ----------
         env : dict
-            Required keys: T, nH, Av, uv_flux.
+            Required: T, nH, uv_flux (or uv1).  Also Av, unless pd_fac=True.
+            Required when pd_fac=True: uv3, uv4.
             Optional: Tcap_2body (bool, default True).
 
         Returns
@@ -226,10 +248,16 @@ class Network:
         """
         T = float(env["T"])
         nH = float(env["nH"])
-        Av = float(env["Av"])
-        uv_flux = float(env["uv_flux"])
+        uv_flux = _uv1(env)
         Tcap_2body = bool(env.get("Tcap_2body", True))
-        shield = shielding.shield_factors(Av) if self.self_shielding else None
+        if self.pd_fac:
+            sd = pdfac.spline_init(uv_flux, env["uv3"], env["uv4"])
+            Av = float(pdfac.av(sd))
+        else:
+            sd = None
+            Av = float(env["Av"])
+        shield = (shielding.shield_factors(Av, dust=self.pd_fac)
+                  if self.self_shielding else None)
 
         N = len(self.species)
         A_rows, A_cols, A_data = [], [], []
@@ -248,7 +276,7 @@ class Network:
                 continue
 
             k = self._calculate_rate(rxn, T, nH, Av, uv_flux, Tcap_2body,
-                                     shield)
+                                     shield, sd)
             if k == 0.0:
                 continue
 
@@ -299,7 +327,7 @@ class Network:
         Parameters
         ----------
         env : dict
-            Required keys: T, nH, Av, uv_flux. Optional: Tcap_2body (default True).
+            As for :meth:`get_operators`.
 
         Returns
         -------
@@ -326,6 +354,11 @@ class Network:
             ch = [_shield_channel(r) for r in rx]
             self._sh_h2 = np.array([c == "H2" for c in ch])
             self._sh_co = np.array([c == "CO" for c in ch])
+            # Effective wavelength per frml-2 reaction.  Depends only on the reactant and gamma
+            self._xv = (np.array([pdfac.xval(r["reactants"][0], r["gamma"])
+                                  if r["frml"] == 2 and r["reactants"] else np.nan
+                                  for r in rx])
+                        if self.pd_fac else None)
 
             def coalesce(contribs, ncol):  # (row, col, sign, reaction) -> fixed CSR + scatter map
                 if not contribs:
@@ -368,8 +401,14 @@ class Network:
             self._fast_N = N
 
         # ---- Per call: rate coefficient for every reaction, vectorized. ----
-        T, nH, Av = float(env["T"]), float(env["nH"]), float(env["Av"])
-        uv, Tcap = float(env["uv_flux"]), bool(env.get("Tcap_2body", True))
+        T, nH = float(env["T"]), float(env["nH"])
+        uv, Tcap = _uv1(env), bool(env.get("Tcap_2body", True))
+        if self.pd_fac:
+            sd = pdfac.spline_init(uv, env["uv3"], env["uv4"])
+            Av = float(pdfac.av(sd))
+        else:
+            sd = None
+            Av = float(env["Av"])
         a, b, g, fr, it = self._al, self._be, self._ga, self._fr, self._it
         # Teff optionally clamped to each reaction's [tmin, tmax] (no clamp for -9999/9999)
         Teff = np.where(self._norange, T, np.clip(T, self._tn, self._tx)) if Tcap else np.full(a.shape, T)
@@ -378,11 +417,19 @@ class Network:
         m = fr == 1                          # cosmic-ray ionisation
         k[m] = a[m] * zeta_cr
         m = fr == 2                          # UV photodissociation
-        k[m] = a[m] * uv * (np.exp(-g[m] * Av) if self.dust_attenuation else 1.0)
+        if self.pd_fac:
+            k[m] = a[m] * pdfac.pdfac(sd, self._xv[m])
+        else:
+            k[m] = a[m] * uv * (np.exp(-g[m] * Av) if self.dust_attenuation else 1.0)
         if self.self_shielding:
-            f_h2, f_co = shielding.shield_factors(Av)
-            k[self._sh_h2] *= f_h2
-            k[self._sh_co] *= f_co
+            f_h2, f_co = shielding.shield_factors(Av, dust=self.pd_fac)
+            if self.pd_fac:
+                # H2SHIELD/COSHIELD overwrite these two: theta only, no PDfac.
+                k[self._sh_h2] = a[self._sh_h2] * f_h2
+                k[self._sh_co] = a[self._sh_co] * f_co
+            else:
+                k[self._sh_h2] *= f_h2
+                k[self._sh_co] *= f_co
         m = (fr == 3) & p                    # Kooij
         k[m] = a[m] * (Teff[m] / 300.0) ** b[m] * np.exp(-g[m] / Teff[m])
         m = (fr == 4) & p                    # ionpol1
@@ -677,12 +724,14 @@ class Network:
 
     def _calculate_rate(self, rxn: dict, T: float, nH: float,
                         Av: float, uv_flux: float,
-                        Tcap_2body: bool, shield=None) -> float:
+                        Tcap_2body: bool, shield=None, sd=None) -> float:
         """Compute the effective scalar rate coefficient for a single reaction.
 
         For 2-body reactions nH is already absorbed, so that the contribution to dx/dt is k_eff * x_i * x_j with x in abundance-per-H units.
 
         ``shield``, when given, is the ``(f_H2, f_CO)`` pair from :func:`shielding.shield_factors`, applied to the matching frml-2 channel.
+
+        ``sd``, when given, is the :class:`pdfac.SplineData` for the local field; frml-2 rates then come from PDfac instead of ``uv_flux``.
 
         Supported formula types
         -----------------------
@@ -714,6 +763,12 @@ class Network:
 
         # --- frml 2: external UV photoreactions ---
         if frml == 2:
+            if sd is not None:
+                ch = _shield_channel(rxn)
+                if shield is not None and ch is not None:
+                    # H2SHIELD/COSHIELD overwrite these two: theta only, no PDfac.
+                    return a * (shield[0] if ch == "H2" else shield[1])
+                return a * float(pdfac.pdfac(sd, pdfac.xval(rxn["reactants"][0], g)))
             k = a * uv_flux
             if self.dust_attenuation:
                 k *= np.exp(-g * Av)

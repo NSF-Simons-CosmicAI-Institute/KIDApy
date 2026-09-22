@@ -1,3 +1,4 @@
 numpy>=2.1
 scipy>=1.15
 matplotlib>=3.10  # optional, required only for QuadraticSolver.plot
+pytest>=8.0       # optional, required only to run tests/

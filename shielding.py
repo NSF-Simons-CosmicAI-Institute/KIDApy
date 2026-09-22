@@ -11,7 +11,7 @@ The rate is written as the unattenuated rate times a set of dimensionless shield
 
 theta_H2 is H2 self-shielding; theta_CO is CO self-shielding; theta_H2CO is shielding of the CO bands by overlapping H2 Lyman-Werner lines. 
 
-All three are tabulated in ``networks/lee1996_shielding.dat`` (a verbatim copy of MAGICKAL_lite's ``ml_ssdata.d``).
+All three are tabulated in ``networks/lee1996_shielding.dat``.
 
 The Lee tables carry a fourth curve, theta_dust(Av), for continuum extinction of the CO band.  It is loaded but not applied: the KIDA network already supplies its own ``exp(-gamma*Av)`` dust term for the same reaction, and applying both would attenuate twice.  
 
@@ -235,7 +235,7 @@ def _theta(x, table, xp, iclamp=0):
     return xp.where(lx <= X[iclamp], 1.0, 10.0 ** ly)
 
 
-def shield_factors(Av, tables=None, xp=np):
+def shield_factors(Av, tables=None, xp=np, dust=False):
     """H2 and CO shielding factors at extinction ``Av``.
 
     Parameters
@@ -246,6 +246,8 @@ def shield_factors(Av, tables=None, xp=np):
         Pre-loaded tables.  Loaded (and cached) from disk if omitted.  Under JAX, pass tables already converted with :func:`to_backend`.
     xp : module
         ``numpy`` (default) or ``jax.numpy``.
+    dust : bool
+        Fold ``theta_dust(Av)`` into ``f_CO``, as ``COSHIELD`` does.  Off by default and handled by parser.py. 
 
     Returns
     -------
@@ -260,6 +262,8 @@ def shield_factors(Av, tables=None, xp=np):
     f_H2 = _theta(N_H2, tables.h2, xp, _CLAMP["h2"])
     f_CO = (_theta(N_CO, tables.co, xp, _CLAMP["co"])
             * _theta(N_H2, tables.h2_co, xp, _CLAMP["h2_co"]))
+    if dust:
+        f_CO = f_CO * _theta(Av, tables.dust, xp, _CLAMP["dust"])
 
     return f_H2, f_CO
 

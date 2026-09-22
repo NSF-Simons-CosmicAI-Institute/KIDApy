@@ -15,6 +15,7 @@ The current implementation only supports chemical networks that contain unimolec
 | `parser.py` | `Network`, `load_abundances` |
 | `solver.py` | `QuadraticSolver`, `QuadraticSolverTracer` |
 | `shielding.py` | H₂ and CO self-shielding of the FUV photodissociation rates |
+| `pdfac.py` | Three-band radiation-field scaling of FUV photoreaction rates |
 | `networks/kida.uva.2024/` | KIDA uva 2024 gas-phase reactions and initial abundances |
 | `networks/nelson/` | Nelson gas-phase reactions and initial abundances |
 | `networks/osu_09_2008/` | OSU 09/2008 gas-phase reactions and initial abundances |
@@ -50,7 +51,7 @@ where $x$ is the vector of species abundances per H nucleus. $A$ encodes unimole
 **Constructor**
 
 ```python
-Network(grains=False, self_shielding=False, dust_attenuation=False)
+Network(grains=False, self_shielding=False, dust_attenuation=False, pd_fac=False)
 ```
 
 | Parameter | Type | Description |
@@ -58,6 +59,7 @@ Network(grains=False, self_shielding=False, dust_attenuation=False)
 | `grains` | bool | Activate pseudo-grain reactions (H₂ formation via XH, ion–grain recombination via GRAIN-/GRAIN0). Default: `False`. |
 | `self_shielding` | bool | Apply Lee et al. (1996) H₂ and CO shielding factors to the H₂ and CO photodissociation rates. See `shielding.py`. Default: `False`. |
 | `dust_attenuation` | bool | Include the $\exp(-\gamma A_v)$ dust term in frml-2 photoreaction rates. Off by default, on the assumption that `uv_flux` is already attenuated. Default: `False`. |
+| `pd_fac` | bool | Evaluate frml-2 photoreaction rates from the three-band radiation field (`uv1`, `uv3`, `uv4`) via PDfac. Mutually exclusive with `dust_attenuation`; when enabled, $A_v$ is derived from the radiation field. Default: `False`. |
 
 **Methods**
 
@@ -78,6 +80,21 @@ env = dict(
     uv_flux = 1.0,    # FUV field scaling (1 = standard Draine field)
 )
 ```
+
+For the three-band UV treatment, construct the network with `pd_fac=True` and pass the three band energy densities instead of a single `uv_flux`:
+
+```python
+net = Network(pd_fac=True)
+env = dict(
+    T   = 10.0,
+    nH  = 1e4,
+    uv1 = 1.0,    # 8.00-13.60 eV band; synonym for uv_flux in the one-band path
+    uv3 = 1.0,    # 3.44-8.00 eV band
+    uv4 = 1.0,    # 0.41-3.44 eV band
+)
+```
+
+With `pd_fac=True`, `Av` is computed from the radiation field and any `Av` supplied in `env` is ignored.
 
 **Temperature clamping.** Each KIDA reaction entry carries a validity window $[T_{\min}, T_{\max}]$ over which its rate law was fit.  When `Tcap_2body=True` (the default), the effective temperature used to evaluate bimolecular rate
 coefficients is clamped to $[T_{\min}, T_{\max}]$, avoiding extrapolation of the fit outside its tabulated range.  Set `Tcap_2body=False` to disable clamping and use the raw gas temperature for every reaction.
@@ -219,7 +236,7 @@ out, header = tracer.save_data(t, y, pt, species, save_path="run",
 | Parameter | Description |
 |-----------|-------------|
 | `dt_hydro` | Hydrodynamic timestep in seconds |
-| `pt` | Physical trajectory, shape $(M, 5)$: columns $[\mathrm{nH},\, T,\, T_\mathrm{grain},\, A_v,\, \mathrm{uv\_flux}]$ |
+| `pt` | Physical trajectory, shape $(M, 5)$ with columns $[\mathrm{nH},\, T,\, T_\mathrm{grain},\, A_v,\, \mathrm{uv\_flux}]$, or shape $(M, 7)$ with columns $[\mathrm{nH},\, T,\, T_\mathrm{grain},\, A_v,\, \mathrm{uv1},\, \mathrm{uv3},\, \mathrm{uv4}]$ for `pd_fac=True` |
 | `get_tensors` | Callable `get_tensors(env) -> (A, B)`; typically `net.get_operators` |
 | `x0` | Initial species abundances, shape $(N,)$ |
 | `atol`, `rtol` | Solver tolerances |

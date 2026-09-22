@@ -13,4 +13,4 @@ Na+   2.0e-9
 Mg+   7.0e-9
 Cl+   1.0e-9
 P+    2.0e-10
-GRAIN0 1.8e-12
+GRAIN0 5e-12 # Matches n_d in parser.py

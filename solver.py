@@ -470,6 +470,10 @@ class QuadraticSolverTracer:
     """
 
     _PT_COLS = ("nH", "T", "Tgrain", "Av", "uv_flux")
+
+    #: Layout produced by ``HydroData(three_uv_bands=True)``, required by the :mod:`pdfac` rate path.  ``uv_flux`` is named ``uv1`` here since all three bands are named by their bin.  ``pt`` may use either layout.
+    _PT_COLS_BANDS = ("nH", "T", "Tgrain", "Av", "uv1", "uv3", "uv4")
+
     _VALID_INTERPOLATION = {"piecewise_constant", "cubic_spline", "pchip"}
 
     def solve(
@@ -542,29 +546,35 @@ class QuadraticSolverTracer:
             )
 
         pt = np.asarray(pt, dtype=np.float64)
-        if pt.ndim != 2 or pt.shape[1] != len(self._PT_COLS):
+        _widths = (len(self._PT_COLS), len(self._PT_COLS_BANDS))
+        if pt.ndim != 2 or pt.shape[1] not in _widths:
             raise ValueError(
-                f"pt must have shape (M, {len(self._PT_COLS)}); got {pt.shape}"
+                f"pt must have shape (M, {_widths[0]}) or (M, {_widths[1]}); "
+                f"got {pt.shape}"
             )
         if pt.shape[0] == 0:
             raise ValueError("pt must contain at least one trajectory point")
 
         x0 = np.asarray(x0, dtype=np.float64).copy()
-        x_floor = min_scale * atol if use_scaling else atol
+        x_floor = max(min_scale * atol, 1e-26) if use_scaling else atol
         q = QuadraticSolver()
 
         A0, B0 = get_tensors(self._to_env(pt[0]))
+        t_eq = 3600 * 24 * 365.25 * 1e4
+        # Only the final state is used below.  With t_eval=None, solve_ivp keeps the state at every accepted step and returns an (N, n_steps) array.
         _, y_eq = q.solve(
             A0,
             B0,
-            (0.0, 3600 * 24 * 365.25 * 1e4),
+            (0.0, t_eq),
             x0,
             method=method,
             atol=x_floor,
             rtol=rtol,
             scale=None,
+            t_eval=[t_eq],
         )
-        x0 = y_eq[:, -1]
+        
+        x0 = y_eq[:, -1].copy()
 
         M = pt.shape[0]
         if M == 1:
@@ -665,9 +675,13 @@ class QuadraticSolverTracer:
                     t_eval=seg_t_eval,
                 )
                 if sol.status != 0:
-                    raise RuntimeError(
+                    # Attach the segments already solved so a caller can keep them; without this the whole tracer is lost to a failure that may be confined to the last segment.
+                    err = RuntimeError(
                         f"Solver failure at segment {i} with status={sol.status}: {sol.message}"
                     )
+                    err.t, err.y = self._assemble(all_t, all_y, t_eval_arr)
+                    err.segment = i
+                    raise err
                 y_seg = scale[:, None] * sol.y
             else:
                 def f(t, x):
@@ -691,9 +705,13 @@ class QuadraticSolverTracer:
                     t_eval=seg_t_eval,
                 )
                 if sol.status != 0:
-                    raise RuntimeError(
+                    # Attach the segments already solved so a caller can keep them; without this the whole tracer is lost to a failure that may be confined to the last segment.
+                    err = RuntimeError(
                         f"Solver failure at segment {i} with status={sol.status}: {sol.message}"
                     )
+                    err.t, err.y = self._assemble(all_t, all_y, t_eval_arr)
+                    err.segment = i
+                    raise err
                 y_seg = sol.y
 
             all_t.append(sol.t)
@@ -703,6 +721,13 @@ class QuadraticSolverTracer:
             if verbose:
                 print(f"{interpolation} segment {i + 1}/{M - 1}: nfev={sol.nfev}  njev={sol.njev}  nout={sol.t.size}")
 
+        return self._assemble(all_t, all_y, t_eval_arr)
+
+    @staticmethod
+    def _assemble(all_t, all_y, t_eval_arr):
+        """Concatenate per-segment output into one trajectory."""
+        if not all_t:
+            return np.empty(0), np.empty((0, 0))
         if t_eval_arr is not None:
             # An explicit grid is partitioned across segments by the half-open filter [knot_i, knot_{i+1}); the points are disjoint, so the concatenation reproduces the requested grid with nothing to drop.
             return np.concatenate(all_t), np.hstack(all_y)
@@ -749,7 +774,7 @@ class QuadraticSolverTracer:
         """
         Solve many independent tracer trajectories in parallel.
 
-        Each tracer is integrated with :meth:`solve`; parallelism is across trajectories (each trajectory's hydro steps remain sequential) using a process pool. All solve arguments are shared across trajectories.
+        Each tracer is integrated with :meth:`solve`; parallelism is across trajectories (each trajectory's hydro steps remain sequential) using a process pool. All solve arguments are shared across trajectories.  Parameters not listed below are passed through to :meth:`solve`.
 
         Parameters
         ----------
@@ -761,7 +786,6 @@ class QuadraticSolverTracer:
             Number of worker processes. ``1`` runs serially.
         return_failures : bool
             If ``True``, failed trajectories are stored as ``None`` and returned as ``(results, failures)`` with ``failures`` a list of ``(index, exception)``; otherwise the first failure is raised.
-        Other parameters are passed through to :meth:`solve`.
 
         Returns
         -------
@@ -983,17 +1007,24 @@ class QuadraticSolverTracer:
                 seg_t_eval = np.clip(seg_t_eval, t0, t1)
             else:
                 seg_t_eval = None
-            t_i, y_i = q.solve(
-                A_i,
-                B_i,
-                (t0, t1),
-                x0,
-                method=method,
-                atol=atol,
-                rtol=rtol,
-                scale=scale,
-                t_eval=seg_t_eval,
-            )
+            try:
+                t_i, y_i = q.solve(
+                    A_i,
+                    B_i,
+                    (t0, t1),
+                    x0,
+                    method=method,
+                    atol=atol,
+                    rtol=rtol,
+                    scale=scale,
+                    t_eval=seg_t_eval,
+                )
+            except RuntimeError as exc:
+                # q.solve does not say which segment failed; add it, and the segments already done.
+                err = RuntimeError(f"Solver failure at segment {i}: {exc}")
+                err.t, err.y = all_t, all_y
+                err.segment = i
+                raise err from exc
 
             all_t.append(t_i + i * dt_hydro)
             all_y.append(y_i)
@@ -1064,7 +1095,7 @@ class QuadraticSolverTracer:
         return eval_env
 
     def _to_env(self, p: np.ndarray) -> dict:
-        return dict(
+        env = dict(
             T=float(p[1]),
             nH=float(p[0]),
             Av=float(p[3]),
@@ -1072,3 +1103,9 @@ class QuadraticSolverTracer:
             Tcap_2body=True,
             Tgrain=float(p[2]),
         )
+        if len(p) == len(self._PT_COLS_BANDS):
+            # Name it uv1 alongside uv3/uv4; parser accepts either key.
+            env["uv1"] = env.pop("uv_flux")
+            env["uv3"] = float(p[5])
+            env["uv4"] = float(p[6])
+        return env
