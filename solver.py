@@ -47,6 +47,19 @@ def _tracer_mt_worker(task):
     return i, out
 
 
+def _segment_failure(i, message, all_t, all_y, stacked=False, drop_shared_knots=False):
+    """RuntimeError for a failed tracer segment, carrying the segments solved before it as ``.t``/``.y`` so callers can keep the partial trajectory: per-segment lists, or (``stacked``) arrays laid out like the successful return, with ``drop_shared_knots`` removing the knot each adaptive segment repeats from the one before."""
+    err = RuntimeError(f"Solver failure at segment {i}: {message}")
+    if not stacked:
+        err.t, err.y = list(all_t), list(all_y)
+    elif not all_t:
+        err.t = err.y = None
+    else:
+        k = 1 if drop_shared_knots else 0
+        err.t = np.concatenate([all_t[0]] + [t[k:] for t in all_t[1:]])
+        err.y = np.hstack([all_y[0]] + [y[:, k:] for y in all_y[1:]])
+    return err
+
 def _make_jac(Acsr, B, N):
     """
     Build a ``jac(t, x)`` callable for J = A + B(x, ·) + B(·, x) whose sparsity structure is computed **once**.
@@ -620,9 +633,11 @@ class QuadraticSolverTracer:
 
             if t_eval_arr is not None:
                 upper_cmp = (t_eval_arr <= t_span_i[1]) if i == M - 2 else (t_eval_arr < t_span_i[1])
-                seg_t_eval = t_eval_arr[(t_eval_arr >= t_span_i[0]) & upper_cmp]
-                seg_t_eval = seg_t_eval if seg_t_eval.size else None
+                out_t = t_eval_arr[(t_eval_arr >= t_span_i[0]) & upper_cmp]
+                # Always integrate to the knot so the next segment starts from the true end state; the knot is dropped from the output below unless requested.
+                seg_t_eval = np.union1d(out_t, [t_span_i[1]])
             else:
+                out_t = None
                 seg_t_eval = None
 
             if use_scaling:
@@ -665,9 +680,8 @@ class QuadraticSolverTracer:
                     t_eval=seg_t_eval,
                 )
                 if sol.status != 0:
-                    raise RuntimeError(
-                        f"Solver failure at segment {i} with status={sol.status}: {sol.message}"
-                    )
+                    raise _segment_failure(i, f"status={sol.status}: {sol.message}", all_t, all_y,
+                                           stacked=True, drop_shared_knots=t_eval_arr is None)
                 y_seg = scale[:, None] * sol.y
             else:
                 def f(t, x):
@@ -691,14 +705,18 @@ class QuadraticSolverTracer:
                     t_eval=seg_t_eval,
                 )
                 if sol.status != 0:
-                    raise RuntimeError(
-                        f"Solver failure at segment {i} with status={sol.status}: {sol.message}"
-                    )
+                    raise _segment_failure(i, f"status={sol.status}: {sol.message}", all_t, all_y,
+                                           stacked=True, drop_shared_knots=t_eval_arr is None)
                 y_seg = sol.y
 
-            all_t.append(sol.t)
-            all_y.append(y_seg)
             x0 = y_seg[:, -1]
+            if out_t is not None:
+                keep = np.isin(sol.t, out_t)
+                all_t.append(sol.t[keep])
+                all_y.append(y_seg[:, keep])
+            else:
+                all_t.append(sol.t)
+                all_y.append(y_seg)
 
             if verbose:
                 print(f"{interpolation} segment {i + 1}/{M - 1}: nfev={sol.nfev}  njev={sol.njev}  nout={sol.t.size}")
@@ -983,17 +1001,20 @@ class QuadraticSolverTracer:
                 seg_t_eval = np.clip(seg_t_eval, t0, t1)
             else:
                 seg_t_eval = None
-            t_i, y_i = q.solve(
-                A_i,
-                B_i,
-                (t0, t1),
-                x0,
-                method=method,
-                atol=atol,
-                rtol=rtol,
-                scale=scale,
-                t_eval=seg_t_eval,
-            )
+            try:
+                t_i, y_i = q.solve(
+                    A_i,
+                    B_i,
+                    (t0, t1),
+                    x0,
+                    method=method,
+                    atol=atol,
+                    rtol=rtol,
+                    scale=scale,
+                    t_eval=seg_t_eval,
+                )
+            except RuntimeError as exc:
+                raise _segment_failure(i, str(exc), all_t, all_y) from exc
 
             all_t.append(t_i + i * dt_hydro)
             all_y.append(y_i)
