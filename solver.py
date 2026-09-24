@@ -630,9 +630,11 @@ class QuadraticSolverTracer:
 
             if t_eval_arr is not None:
                 upper_cmp = (t_eval_arr <= t_span_i[1]) if i == M - 2 else (t_eval_arr < t_span_i[1])
-                seg_t_eval = t_eval_arr[(t_eval_arr >= t_span_i[0]) & upper_cmp]
-                seg_t_eval = seg_t_eval if seg_t_eval.size else None
+                out_t = t_eval_arr[(t_eval_arr >= t_span_i[0]) & upper_cmp]
+                # Always integrate to the knot so the next segment starts from the true end state; the knot is dropped from the output below unless requested.
+                seg_t_eval = np.union1d(out_t, [t_span_i[1]])
             else:
+                out_t = None
                 seg_t_eval = None
 
             if use_scaling:
@@ -714,9 +716,14 @@ class QuadraticSolverTracer:
                     raise err
                 y_seg = sol.y
 
-            all_t.append(sol.t)
-            all_y.append(y_seg)
             x0 = y_seg[:, -1]
+            if out_t is not None:
+                keep = np.isin(sol.t, out_t)
+                all_t.append(sol.t[keep])
+                all_y.append(y_seg[:, keep])
+            else:
+                all_t.append(sol.t)
+                all_y.append(y_seg)
 
             if verbose:
                 print(f"{interpolation} segment {i + 1}/{M - 1}: nfev={sol.nfev}  njev={sol.njev}  nout={sol.t.size}")
