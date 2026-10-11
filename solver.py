@@ -1072,12 +1072,13 @@ class QuadraticSolverTracer:
 
         log_mask = np.zeros(pt.shape[1], dtype=bool)
         if log_cols is not None:
-            name_to_idx = {name: i for i, name in enumerate(self._PT_COLS)}
+            cols = self._PT_COLS_BANDS if pt.shape[1] == len(self._PT_COLS_BANDS) else self._PT_COLS
+            name_to_idx = {name: i for i, name in enumerate(cols)}
             unknown = [name for name in log_cols if name not in name_to_idx]
             if unknown:
                 raise ValueError(
                     f"log_cols contains unknown parameter name(s) {unknown}; "
-                    f"valid names are {list(self._PT_COLS)}."
+                    f"valid names are {list(cols)}."
                 )
             log_mask[[name_to_idx[name] for name in log_cols]] = True
             if not (pt[:, log_mask] > 0).all():

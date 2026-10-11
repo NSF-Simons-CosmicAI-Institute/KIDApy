@@ -20,11 +20,13 @@ The current implementation only supports chemical networks that contain unimolec
 | `networks/nelson/` | Nelson gas-phase reactions and initial abundances |
 | `networks/osu_09_2008/` | OSU 09/2008 gas-phase reactions and initial abundances |
 | `networks/lee1996_shielding.dat` | Lee et al. (1996) H₂ and CO shielding tables |
+| `datasets/grav_collapse/` | Sample tracer trajectories from a gravitational-collapse simulation |
 | `examples/kida_uva_2024_point.py` | Point integration of the KIDA uva 2024 network |
 | `examples/kida_uva_2024_tracer.py` | Tracer integration of the KIDA uva 2024 network |
 | `examples/nelson_point.py` | Point integration of the Nelson network |
 | `examples/nelson_tracer.py` | Tracer integration of the Nelson network |
 | `examples/nelson_shielding.py` | Effect of CO self-shielding on the Nelson network |
+| `examples/nelson_hydro.py` | Tracer integration of the Nelson network along simulation tracers |
 
 ---
 
@@ -239,7 +241,7 @@ out, header = tracer.save_data(t, y, pt, species, save_path="run",
 | `method` | scipy integrator, default `"BDF"` |
 | `interpolation` | `"piecewise_constant"`, `"cubic_spline"`, or `"pchip"` |
 | `use_scaling` | Solve in scaled coordinates $z = x/\mathrm{scale}$ if `True` |
-| `log_cols` | Parameter columns to interpolate in log space (e.g. `["nH", "Av", "uv_flux"]`) |
+| `log_cols` | Parameter columns to interpolate in log space (e.g. `["nH", "Av", "uv_flux"]`, or `["nH", "Av", "uv1", "uv3", "uv4"]` for a 7-column `pt`) |
 | `t_eval` | Optional output time grid over the full trajectory |
 
 For `"piecewise_constant"`, returns `(list_of_t, list_of_y)` — one entry per hydrodynamic segment. For `"cubic_spline"` and `"pchip"`, returns continuous $(t, y)$ arrays.
@@ -278,8 +280,7 @@ t, y = solver.solve(A, B, (t_eval[0], t_eval[-1]), x0,
 solver.save("output", t, y, col_names=net.species)
 ```
 
-Self-contained examples are in the `examples/` directory. Run from the
-repository root:
+Self-contained examples are in the `examples/` directory. Run from the repository root:
 
 ```
 python examples/kida_uva_2024_point.py
@@ -287,6 +288,7 @@ python examples/kida_uva_2024_tracer.py
 python examples/nelson_point.py
 python examples/nelson_tracer.py
 python examples/nelson_shielding.py
+python examples/nelson_hydro.py
 ```
 
 ---
@@ -294,6 +296,7 @@ python examples/nelson_shielding.py
 ## Author
 
 Arjun Vijaywargiya
+
 [![ORCID](https://img.shields.io/badge/ORCID-0000--0001--5391--5560-A6CE39?logo=orcid&logoColor=white)](https://orcid.org/0000-0001-5391-5560)
 The University of Texas at Austin
 

@@ -1,5 +1,6 @@
 *.pyc
 *.npy
+!datasets/**/*.npy
 *.csv
 *comparison.txt
 
@@ -12,17 +13,14 @@ hydro
 tmp
 docs
 tests
-hydro.py
 read_feature_matrix.ipynb
 examples/kida_all_tracers_jax.py
-.gitignore
 examples/kida_all_tracers_mpi.py
 examples/kida_uva_2024_tracer_jax.py
 examples/nelson_all_tracers_jax.py
 examples/nelson_all_tracers_mpi.py
 examples/real_tracer_jax.py
 solver_jax.py
-.gitignore
 examples/pdfac_compare.py
 examples/nelson_charge_tracer.py
 datasets/grav_collapse/Melisse/README
